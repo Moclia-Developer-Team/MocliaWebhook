@@ -1,15 +1,50 @@
-// 注意: 本项目的所有源文件都必须是 UTF-8 编码
-
-// 这是一个“反撤回”机器人
-// 在群里回复 “/anti-recall enabled.” 或者 “撤回没用” 之后
-// 如果有人在群里撤回，那么机器人会把撤回的内容再发出来
-
 #include <iostream>
-#include <map>
-#include <mirai.h>
+#include <string>
+#include <thread>
+#include <mirai/mirai.h>
+#include <httplib.h>
+#include <nlohmann/json.hpp>
 #include "myheader.h"
+
 using namespace std;
 using namespace Cyan;
+using json = nlohmann::json;
+
+MiraiBot bot;
+string input;
+int CommandNum;
+
+void CommandSys()
+{
+	map<string, int> CommandType = {
+		{"stop",1}
+	};
+	while (true)
+	{
+		try
+		{
+			cin >> input;
+			CommandNum = CommandType[input];
+			switch (CommandNum)
+			{
+				// 结束运行程序
+			case 1:
+				bot.Disconnect();
+				exit(0);
+				break;
+				// 指令错误回复
+			default:
+				cout << "指令错误" << endl;
+				break;
+			}
+		}
+		catch (const std::exception& ex)
+		{
+			cout << ex.what() << endl;
+		}
+
+	}
+}
 
 int main()
 {
@@ -18,13 +53,15 @@ int main()
 	system("chcp 65001");
 #endif
 
-	MiraiBot bot;
+	
 	SessionOptions opts;
-	opts.BotQQ = 123456789_qq;				// 请修改为你的机器人QQ
+	opts.BotQQ = 2556410868_qq;				// 请修改为你的机器人QQ
 	opts.HttpHostname = "localhost";		// 请修改为和 mirai-api-http 配置文件一致
 	opts.WebSocketHostname = "localhost";	// 同上
-	opts.HttpPort = 8080;					// 同上
-	opts.WebSocketPort = 8080;				// 同上
+	opts.HttpPort = 5036;					// 同上
+	opts.WebSocketPort = 5036;				// 同上
+	opts.EnableVerify = false;
+	opts.SingleMode = true;
 	opts.VerifyKey = "VerifyKey";			// 同上
 
 	while (true)
@@ -43,50 +80,93 @@ int main()
 	}
 	cout << "Bot Working..." << endl;
 
-	// 用map记录哪些群启用了“反撤回”功能
-	map<GID_t, bool> groups;
+	thread CommandSystem(CommandSys);
+	CommandSystem.detach();
+	
+	httplib::Server ser;
 
-	bot.On<GroupMessage>(
-		[&](GroupMessage m)
+	
+
+
+	ser.Post("/webhook", [](const httplib::Request& req, httplib::Response& res) {
+		cout << req.body << endl << endl;
+		json whjson = json::parse(req.body);
+
+
+		struct repo
 		{
-			try
+			string FullName; // 完整仓库名 
+			string ref; // 完整分支名 
+			int64_t commitNum; // 提交数量 
+			string lastCommitID; // 上次提交短ID 
+			string thisCommitID; // 当次提交短ID 
+		};
+		
+
+		struct commit
+		{
+			string ID;
+			string Time;
+			string Message;
+			string author; // 提交作者 
+			string authorEmail;
+			string committer; // 提交者 
+			string committerEmail;
+		};
+
+		struct commitPath
+		{
+			string id;
+			string time;
+			string msg;
+			string author;
+			string authorEmail;
+			string committer;
+			string committerEmail;	
+		};
+
+		string finalResult;
+
+		try
+		{
+			if (whjson.find("/pusher"_json_pointer) != whjson.end())
 			{
-				string plain = m.MessageChain.GetPlainText();
-				if (plain == "/anti-recall enabled." || plain == "撤回没用")
+				repo newRepo;
+
+				newRepo.FullName = whjson.at("/repository/full_name"_json_pointer);
+				newRepo.ref = whjson.at("/ref"_json_pointer);
+				newRepo.lastCommitID = to_string(whjson.at("/before"_json_pointer)).erase(8);
+				newRepo.thisCommitID = to_string(whjson.at("/after"_json_pointer)).erase(8);
+				newRepo.commitNum = whjson.at("/commits").size();
+
+				finalResult = "[" + newRepo.FullName + ":" + newRepo.ref + "]\n"
+							+ to_string(newRepo.commitNum) + " new commit(s) "
+							+ newRepo.lastCommitID + " -> " + newRepo.thisCommitID
+							+ "\n---status---\n"; 
+
+				commit commits;
+				commitPath path;
+
+				for (int64_t pointCommit = 0; pointCommit < newRepo.commitNum; pointCommit++)
 				{
-					groups[m.Sender.Group.GID] = true;
-					m.Reply(MessageChain().Plain("撤回也没用，我都看到了"));
-					return;
+					path.id = "/commits/" + to_string(pointCommit) + "/id";
+					commits.ID = to_string(whjson.at("commits").at(pointCommit).at("id")).erase(8);
 				}
-				if (plain == "/anti-recall disabled." || plain == "撤回有用")
-				{
-					groups[m.Sender.Group.GID] = false;
-					m.Reply(MessageChain().Plain("撤回有用"));
-					return;
-				}
+				
 			}
-			catch (const std::exception& ex)
-			{
-				cout << ex.what() << endl;
-			}
+		}
+		catch(const exception& e)
+		{
+			std::cerr << e.what() << '\n';
+		}
+		
+		
+		
+		res.set_content("received!", "text/plain");
 		});
 
-
-	bot.On<GroupRecallEvent>(
-		[&](GroupRecallEvent e)
-		{
-			try
-			{
-				if (!groups[e.Group.GID]) return;
-				auto recalled_mc = bot.GetGroupMessageFromId(e.MessageId).MessageChain;
-				auto mc = "刚刚有人撤回了: " + recalled_mc;
-				bot.SendMessage(e.Group.GID, mc);
-			}
-			catch (const std::exception& ex)
-			{
-				cout << ex.what() << endl;
-			}
-		});
+	
+	std::cout << "listening 0.0.0.0:2256" << std::endl;
 
 	// 在失去与mah的连接后重连
 	bot.On<LostConnection>([&](LostConnection e)
@@ -109,6 +189,8 @@ int main()
 			}
 		});
 
+	ser.listen("0.0.0.0", 2256);
+
 	string cmd;
 	while (cin >> cmd)
 	{
@@ -116,9 +198,9 @@ int main()
 		{
 			// 程序结束前必须调用 Disconnect，否则 mirai-api-http 会内存泄漏。
 			bot.Disconnect();
-			break;
+			exit(0);
 		}
 	}
-
+	
 	return 0;
 }
