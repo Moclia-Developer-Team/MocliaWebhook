@@ -1,16 +1,28 @@
+
 #include <iostream>
 #include <string>
-#include <thread>
 #include <mirai/mirai.h>
+#include <thread>
 #include <httplib.h>
 #include <nlohmann/json.hpp>
-#include "myheader.h"
+
+// fu*k windows.h
+#ifdef max
+#undef max
+#endif
+#ifdef SendMessage
+#undef SendMessage
+#endif
+#ifdef CreateEvent
+#undef CreateEvent
+#endif
 
 using namespace std;
 using namespace Cyan;
 using json = nlohmann::json;
 
 MiraiBot bot;
+httplib::Server ser;
 string input;
 int CommandNum;
 
@@ -54,15 +66,7 @@ int main()
 #endif
 
 	
-	SessionOptions opts;
-	opts.BotQQ = 2556410868_qq;				// 请修改为你的机器人QQ
-	opts.HttpHostname = "localhost";		// 请修改为和 mirai-api-http 配置文件一致
-	opts.WebSocketHostname = "localhost";	// 同上
-	opts.HttpPort = 5036;					// 同上
-	opts.WebSocketPort = 5036;				// 同上
-	opts.EnableVerify = false;
-	opts.SingleMode = true;
-	opts.VerifyKey = "VerifyKey";			// 同上
+	SessionOptions opts = SessionOptions::FromJsonFile("./config.json");
 
 	while (true)
 	{
@@ -82,11 +86,6 @@ int main()
 
 	thread CommandSystem(CommandSys);
 	CommandSystem.detach();
-	
-	httplib::Server ser;
-
-	
-
 
 	ser.Post("/webhook", [](const httplib::Request& req, httplib::Response& res) {
 		cout << req.body << endl << endl;
@@ -114,45 +113,53 @@ int main()
 			string committerEmail;
 		};
 
-		struct commitPath
-		{
-			string id;
-			string time;
-			string msg;
-			string author;
-			string authorEmail;
-			string committer;
-			string committerEmail;	
-		};
-
 		string finalResult;
 
 		try
 		{
-			if (whjson.find("/pusher"_json_pointer) != whjson.end())
+			if (whjson.find("pusher") != whjson.end())
 			{
 				repo newRepo;
 
-				newRepo.FullName = whjson.at("/repository/full_name"_json_pointer);
-				newRepo.ref = whjson.at("/ref"_json_pointer);
-				newRepo.lastCommitID = to_string(whjson.at("/before"_json_pointer)).erase(8);
-				newRepo.thisCommitID = to_string(whjson.at("/after"_json_pointer)).erase(8);
-				newRepo.commitNum = whjson.at("/commits").size();
+				newRepo.FullName = whjson.at("repository").at("full_name");
+				newRepo.ref = whjson.at("ref");
+				newRepo.lastCommitID = to_string(whjson.at("before")).erase(8);
+				newRepo.thisCommitID = to_string(whjson.at("after")).erase(8);
+				newRepo.commitNum = whjson.at("commits").size();
 
 				finalResult = "[" + newRepo.FullName + ":" + newRepo.ref + "]\n"
-							+ to_string(newRepo.commitNum) + " new commit(s) "
-							+ newRepo.lastCommitID + " -> " + newRepo.thisCommitID
-							+ "\n---status---\n"; 
+					+ to_string(newRepo.commitNum) + " new commit(s) "
+					+ newRepo.lastCommitID + " -> " + newRepo.thisCommitID
+					+ "\n---status---\n"; 
 
 				commit commits;
-				commitPath path;
 
 				for (int64_t pointCommit = 0; pointCommit < newRepo.commitNum; pointCommit++)
 				{
-					path.id = "/commits/" + to_string(pointCommit) + "/id";
 					commits.ID = to_string(whjson.at("commits").at(pointCommit).at("id")).erase(8);
+					commits.Time = whjson.at("commits").at(pointCommit).at("timestamp");
+					commits.author = whjson.at("commits").at(pointCommit).at("author").at("name");
+					commits.authorEmail = whjson.at("commits").at(pointCommit).at("author").at("email");
+					commits.committer = whjson.at("commits").at(pointCommit).at("committer").at("name");
+					commits.committerEmail = whjson.at("commits").at(pointCommit).at("author").at("email");
+					commits.Message = whjson.at("commits").at(pointCommit).at("message");
+
+					finalResult += "[" + commits.ID + "] " + commits.Time + "\n"
+						+ "Author: " + commits.author + "<" + commits.authorEmail + ">\n"
+						+ "Committer: " + commits.committer + "<" + commits.committerEmail + ">\n"
+						+ "Message: " + commits.Message + "\n";
 				}
-				
+				MessageChain msg = MessageChain().Plain(finalResult);
+				ifstream conf("./config.json");
+				json config;
+				conf >> config;
+				int64_t group = config.at("sendGroup");
+				GID_t sendGroup = GID_t(group);
+				bot.SendMessage(sendGroup, msg);
+			}
+			else
+			{
+				cout << "不支持该json" << endl;
 			}
 		}
 		catch(const exception& e)
@@ -160,12 +167,11 @@ int main()
 			std::cerr << e.what() << '\n';
 		}
 		
-		
-		
 		res.set_content("received!", "text/plain");
 		});
 
-	
+
+
 	std::cout << "listening 0.0.0.0:2256" << std::endl;
 
 	// 在失去与mah的连接后重连
@@ -190,17 +196,5 @@ int main()
 		});
 
 	ser.listen("0.0.0.0", 2256);
-
-	string cmd;
-	while (cin >> cmd)
-	{
-		if (cmd == "exit")
-		{
-			// 程序结束前必须调用 Disconnect，否则 mirai-api-http 会内存泄漏。
-			bot.Disconnect();
-			exit(0);
-		}
-	}
-	
 	return 0;
 }
